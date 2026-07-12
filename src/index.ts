@@ -1,122 +1,94 @@
-/**
- * Worker 2: Isolated Search Proxy (Tavily Integrator)
- * 
- * Securely handles internal search queries, dispatches REST API requests to 
- * Tavily, strips unnecessary document payloads, and exports a text-only summary.
- */
-
-type KVNamespace = any;
+// =============================================================================
+// WORKER 2 — SEARCH PROXY (Tavily integrator)
+// -----------------------------------------------------------------------------
+// Stateless. Only reachable via the SEARCH service binding from Worker 3.
+// Takes a { query } POST, calls Tavily, strips boilerplate/HTML down to a
+// compact plain-text block, and returns { summary }.
+// =============================================================================
 
 export interface Env {
-  KV: KVNamespace;
-  AUTH_KEY: string;
+  TAVILY_API_KEY: string;
 }
 
-interface TavilyResult {
-  title: string;
-  url: string;
-  content: string;
+const TAVILY_URL = "https://api.tavily.com/search";
+const SEARCH_DEPTH = "basic";
+const MAX_RESULTS = 5;
+const MAX_SUMMARY_CHARS = 4000;
+
+function stripBoilerplate(text: string): string {
+  return text
+    .replace(/<[^>]+>/g, " ") // strip any stray HTML tags
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 export default {
-  async fetch(request: Request, env: Env, ctx: any): Promise<Response> {
-    // Health check bypass
-    if (request.method === "GET") {
-      return new Response(JSON.stringify({ service: "tavily-proxy", status: "active" }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" }
-      });
-    }
-
+  async fetch(request: Request, env: Env): Promise<Response> {
     if (request.method !== "POST") {
-      return new Response("Method Not Allowed", { status: 405 });
-    }
-
-    // Explicit internal authorization verification
-    const authHeader = request.headers.get("x-api-key");
-    if (!authHeader || authHeader !== env.AUTH_KEY) {
-      return new Response("Unauthorized", { status: 401 });
+      return new Response("Worker 2 (search proxy) is running.", { status: 200 });
     }
 
     try {
-      const url = new URL(request.url);
-      if (url.pathname !== "/tools/tavily-search") {
-        return new Response("Not Found", { status: 404 });
+      const { query } = (await request.json()) as { query?: string };
+      if (!query || typeof query !== "string") {
+        return new Response(JSON.stringify({ error: "missing_query" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        });
       }
 
-      const body: any = await request.json();
-      const query = body.query;
-      if (!query) {
-        return new Response(JSON.stringify({ error: "Missing query parameter" }), { status: 400 });
+      if (!env.TAVILY_API_KEY) {
+        return new Response(JSON.stringify({ error: "tavily_key_missing" }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        });
       }
 
-      // Read Tavily keys directly from the key-pool in the KV namespace
-      const keysRaw = await env.KV.get("tavily_keys_pool");
-      let keys: any[] = [];
-      if (keysRaw) {
-        try { keys = JSON.parse(keysRaw); } catch {}
-      }
-
-      // Pick the best key from the active pool (sort by credits descending)
-      const activeKeys = keys.filter((k: any) => !k.invalidated && (k.remainingCredit === undefined || k.remainingCredit > 0));
-      if (activeKeys.length === 0) {
-        return new Response(JSON.stringify({
-          content: [{ type: "text", text: "Error: No available Tavily API keys remain in proxy pool." }],
-          isError: true
-        }), { status: 200, headers: { "Content-Type": "application/json" } });
-      }
-
-      activeKeys.sort((a, b) => (b.remainingCredit || 0) - (a.remainingCredit || 0));
-      const chosenKeyObj = activeKeys[0];
-      const apiKey = chosenKeyObj.apiKey;
-
-      // Dispatch search to Tavily Endpoint
-      const tavilyResponse = await fetch("https://api.tavily.com/search", {
+      const tavilyRes = await fetch(TAVILY_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          api_key: apiKey,
-          query: query,
-          search_depth: body.search_depth || "basic",
-          max_results: body.max_results || 5
-        })
+          api_key: env.TAVILY_API_KEY,
+          query,
+          search_depth: SEARCH_DEPTH,
+          max_results: MAX_RESULTS,
+          include_answer: true,
+        }),
       });
 
-      if (!tavilyResponse.ok) {
-        // If Tavily responds with authentication failure, invalidate the key in the pool
-        if (tavilyResponse.status === 401 || tavilyResponse.status === 403) {
-          chosenKeyObj.invalidated = true;
-          await env.KV.put("tavily_keys_pool", JSON.stringify(keys));
-        }
-        throw new Error(`Tavily HTTP error: ${tavilyResponse.status}`);
+      if (!tavilyRes.ok) {
+        const errBody = await tavilyRes.text();
+        console.error(`[worker2] Tavily HTTP ${tavilyRes.status}: ${errBody.slice(0, 300)}`);
+        return new Response(JSON.stringify({ error: "tavily_upstream_error", status: tavilyRes.status }), {
+          status: 502,
+          headers: { "Content-Type": "application/json" },
+        });
       }
 
-      const searchData: any = await tavilyResponse.json();
-      const results: TavilyResult[] = searchData.results || [];
+      const data: any = await tavilyRes.json();
+      const parts: string[] = [];
 
-      // Format a clean, text-only context string (stripping out heavy payload structures)
-      const compiledSummary = results.map((r) => `Title: ${r.title}\nURL: ${r.url}\nContext: ${r.content}`).join("\n\n");
+      if (data.answer) parts.push(`Summary: ${stripBoilerplate(data.answer)}`);
 
-      // Deduct credit counter internally for key monitoring
-      if (chosenKeyObj.remainingCredit !== undefined) {
-        const cost = body.search_depth === "advanced" ? 2 : 1;
-        chosenKeyObj.remainingCredit = Math.max(0, chosenKeyObj.remainingCredit - cost);
-        await env.KV.put("tavily_keys_pool", JSON.stringify(keys));
+      for (const r of data.results || []) {
+        const title = stripBoilerplate(r.title || "");
+        const content = stripBoilerplate(r.content || "");
+        if (title || content) parts.push(`• ${title}: ${content}`);
       }
 
-      return new Response(JSON.stringify({
-        content: [{ type: "text", text: compiledSummary }]
-      }), {
+      let summary = parts.join("\n").trim();
+      if (summary.length > MAX_SUMMARY_CHARS) summary = summary.slice(0, MAX_SUMMARY_CHARS);
+
+      return new Response(JSON.stringify({ summary }), {
         status: 200,
-        headers: { "Content-Type": "application/json" }
+        headers: { "Content-Type": "application/json" },
       });
-
-    } catch (err: any) {
-      console.error("Search Proxy Exception:", err);
-      return new Response(JSON.stringify({
-        content: [{ type: "text", text: `Search proxy error: ${err.message}` }],
-        isError: true
-      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    } catch (err) {
+      console.error("[worker2] fatal error:", err);
+      return new Response(JSON.stringify({ error: "search_proxy_failure" }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
     }
-  }
+  },
 };

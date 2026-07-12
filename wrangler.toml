@@ -1,0 +1,10 @@
+name = "bot2"
+main = "src/index.ts"
+compatibility_date = "2026-07-12"
+
+[vars]
+AUTH_KEY = "111"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "fccf4a64d4694fb5bd95ed0c53629467"

@@ -8,6 +8,12 @@
 
 export interface Env {
   TAVILY_API_KEY: string;
+  // OPTIONAL. Only relevant if this worker is ever given a public route in
+  // addition to its service binding from worker3-orchestrator — service
+  // bindings themselves are NOT reachable from the public internet, only
+  // from workers you've explicitly bound them into, so this is not required
+  // for the architecture as shipped. Leave unset to skip the check entirely.
+  TAVILY_PROXY_AUTH_KEY?: string;
 }
 
 const TAVILY_URL = "https://api.tavily.com/search";
@@ -26,6 +32,17 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     if (request.method !== "POST") {
       return new Response("Worker 2 (search proxy) is running.", { status: 200 });
+    }
+
+    // Defense-in-depth only — see the Env.TAVILY_PROXY_AUTH_KEY comment above.
+    if (env.TAVILY_PROXY_AUTH_KEY) {
+      const provided = request.headers.get("x-api-key");
+      if (provided !== env.TAVILY_PROXY_AUTH_KEY) {
+        return new Response(JSON.stringify({ error: "unauthorized" }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
     }
 
     try {

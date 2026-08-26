@@ -1,7 +1,7 @@
 export default {
   async fetch(request: Request): Promise<Response> {
     // 👤 מזהה הצלם הספציפי שאת תמונותיו (S3) אנחנו מחפשים
-    const targetUser = "202140161@N06"; 
+    const targetUser = "59871731@N06"; 
     
     // 🔐 מפתחות הגישה
     const primaryApiKey = "47a02e6ef4e2c50d3cf672e2b74375ab"; // המפתח החדש

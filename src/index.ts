@@ -1,28 +1,36 @@
 export default {
   async fetch(request: Request): Promise<Response> {
-    const urlObj = new URL(request.url);
-    
-    // שליפת ה-CSRF באופן דינמי מכתובת ה-URL (למשל: ?csrf=...)
-    // אם לא תשלח ב-URL, הוא ישתמש בברירת המחדל שמצאת באנדרואיד
-    const csrfToken = urlObj.searchParams.get("csrf") || "1787806979:b4tbq9uukgc:f6e100e63ed002c1cb906663c99c1ac5";
+    // מזהי הצלם והמפתח הרשמיים שחילצת
+    const targetUserId = "202140161@N06"; 
+    const apiKey = "3faf915241bdfc4b09b7a50a5a4a824a"; 
 
-    const targetUserId = "202140161@N06"; // מזהה הצלם שאתה רוצה לשלוף
-    const apiKey = "3faf915241bdfc4b09b7a50a5a4a824a"; // ה-site_key שמצאת
-
-    // תיקון הכתובת: הוספת ה-? ושם הפרמטר api_key=
-    const flickrUrl = `https://flickr.com?api_key=${apiKey}&user_id=${targetUserId}&safe_search=3&csrf_token=${csrfToken}&format=json&nojsoncallback=1&per_page=5`;
+    // שימוש בכתובת ה-API הציבורית והרשמית של פליקר (מונע קריסות וחסימות)
+    const flickrUrl = `https://flickr.com{apiKey}&user_id=${targetUserId}&safe_search=3&format=json&nojsoncallback=1&per_page=5`;
 
     try {
       const response = await fetch(flickrUrl, {
         method: "GET",
         headers: {
-          "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
           "Accept": "application/json"
         }
       });
 
-      const data = await response.json();
+      // מניעת שגיאה 500: בודק אם פליקר החזיר HTML במקום JSON
+      const contentType = response.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) {
+        const errorText = await response.text();
+        return new Response(JSON.stringify({ 
+          error: "Flickr returned HTML instead of JSON. The key might be expired.",
+          server_response_preview: errorText.substring(0, 300) 
+        }, null, 2), {
+          status: 502,
+          headers: { "Content-Type": "application/json; charset=utf-8" }
+        });
+      }
 
+      // שליפה תקינה של ה-JSON והצגתו
+      const data = await response.json();
       return new Response(JSON.stringify(data, null, 2), {
         headers: { 
           "Content-Type": "application/json; charset=utf-8",
@@ -31,6 +39,7 @@ export default {
       });
 
     } catch (error: any) {
+      // במקרה של תקלה ברשת, נחזיר את השגיאה המובנית בצורת JSON מסודר
       return new Response(JSON.stringify({ error: error.message }), { 
         status: 500,
         headers: { "Content-Type": "application/json" }

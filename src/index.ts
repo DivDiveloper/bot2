@@ -1,73 +1,89 @@
 export default {
   async fetch(request: Request): Promise<Response> {
-    // מזהה המשתמש הספציפי שאתה מחפש את התמונות שלו
+    // 👤 מזהה הצלם הספציפי שאת תמונותיו (S3) אנחנו מחפשים
     const targetUser = "202140161@N06"; 
     
-    // ה-API Key הפנימי שסיפקת בקוד הקודם
-    const apiKey = "47a02e6ef4e2c50d3cf672e2b74375ab"; 
+    // 🔐 מפתחות הגישה
+    const primaryApiKey = "47a02e6ef4e2c50d3cf672e2b74375ab"; // המפתח החדש
+    const backupApiKey = "3faf915241bdfc4b09b7a50a5a4a824a";  // המפתח הישן (גיבוי)
 
-    // אסימון ה-CSRF הזמני ששלפת מאובייקט ה-root
+    // 🎟️ אסימון ה-CSRF הזמני
     const csrfToken = "1787806979:b4tbq9uukgc:f6e100e63ed002c1cb906663c99c1ac5";
 
-    // נקודת הקצה הרשמית והמתוקנת של ה-API
-    const flickrUrl = "https://flickr.com";
+    // פונקציית עזר לבניית ה-URL המלא עבור בקשת GET
+    const buildFlickrUrl = (key: string) => {
+      return "https://www.flickr.com/services/rest/" +
+             "?method=flickr.photos.search" +
+             "&api_key=" + key +
+             "&user_id=" + targetUser +
+             "&safe_search=3" +       // רמת סינון S3 (Restricted)
+             "&per_page=5" +          // הגבלה ל-5 תמונות
+             "&format=json" +
+             "&nojsoncallback=1" +
+             "&csrf=" + encodeURIComponent(csrfToken);
+    };
 
-    // יצירת גוף הבקשה (Form Data) - חובה ב-POST עבור ה-API הפנימי
-    const formData = new URLSearchParams();
-    formData.append("method", "flickr.photos.search");
-    formData.append("api_key", apiKey);
-    formData.append("user_id", targetUser);
-    formData.append("safe_search", "3");      // רמת סינון S3 (Restricted)
-    formData.append("per_page", "5");         // בדיוק 5 תמונות
-    formData.append("format", "json");
-    formData.append("nojsoncallback", "1");
-    formData.append("csrf", csrfToken);        // הזרקת אסימון ה-CSRF הפנימי
+    const commonHeaders = {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Accept": "application/json"
+    };
 
+    // --- ניסיון 1: שימוש במפתח הראשי ---
     try {
-      const response = await fetch(flickrUrl, {
-        method: "POST", // שינוי ל-POST כדי שה-CSRF והסינון יעבדו
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-          "Content-Type": "application/x-www-form-urlencoded",
-          "Accept": "application/json",
-          // שים לב: פליקר עדיין עלולה לדרוש את מחרוזת ה-Cookie המלאה מהדפדפן שלך 
-          // כדי לאמת שאתה אכן המשתמש שמחזיק ב-CSRF הזה. אם זה נכשל, תצטרך להוסיף אותה כאן:
-          // "Cookie": "מחרוזת העוגיות המלאה שלך מהדפדפן"
-        },
-        body: formData.toString()
+      const url = buildFlickrUrl(primaryApiKey);
+      const response = await fetch(url, {
+        method: "GET",
+        headers: commonHeaders
       });
 
-      // בדיקה שהשרת אכן החזיר JSON
       const contentType = response.headers.get("content-type") || "";
       if (!contentType.includes("application/json")) {
-        const errorText = await response.text();
-        return new Response(
-          JSON.stringify({
-            error: "Flickr API did not return JSON format.",
-            server_response: errorText.substring(0, 300),
-            url_called: flickrUrl
-          }),
-          { status: 502, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }
-        );
+        throw new Error("Primary API key did not return JSON. Trying fallback.");
       }
 
       const data = await response.json();
-      return new Response(JSON.stringify(data, null, 2), {
+      return new Response(JSON.stringify({ source: "primary_key", data }, null, 2), {
         status: 200,
-        headers: {
-          "Content-Type": "application/json; charset=utf-8",
-          "Access-Control-Allow-Origin": "*"
-        }
+        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
       });
 
-    } catch (error: any) {
-      return new Response(
-        JSON.stringify({
-          error: "Worker Fetch Exception",
-          message: error.message
-        }),
-        { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }
-      );
+    } catch (primaryError: any) {
+      // --- ניסיון 2: גיבוי אוטומטי עם המפתח הישן ---
+      try {
+        const fallbackUrl = buildFlickrUrl(backupApiKey);
+        const fallbackResponse = await fetch(fallbackUrl, {
+          method: "GET",
+          headers: commonHeaders
+        });
+
+        const fallbackContentType = fallbackResponse.headers.get("content-type") || "";
+        if (!fallbackContentType.includes("application/json")) {
+          const errorText = await fallbackResponse.text();
+          return new Response(
+            JSON.stringify({
+              error: "Both primary and backup API keys failed.",
+              server_response: errorText.substring(0, 300)
+            }),
+            { status: 502, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }
+          );
+        }
+
+        const data = await fallbackResponse.json();
+        return new Response(JSON.stringify({ source: "backup_key", data }, null, 2), {
+          status: 200,
+          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+        });
+
+      } catch (backupError: any) {
+        return new Response(
+          JSON.stringify({
+            error: "Worker Fetch Fatal Exception",
+            primary_exception: primaryError.message,
+            backup_exception: backupError.message
+          }),
+          { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }
+        );
+      }
     }
   }
 };

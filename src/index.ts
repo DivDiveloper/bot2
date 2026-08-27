@@ -1,4 +1,5 @@
-import puppeteer from "@cloudflare/puppeteer";
+import puppeteer from "cloudflare:browser";
+;
 
 interface Env {
   MYBROWSER: any;

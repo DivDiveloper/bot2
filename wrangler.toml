@@ -1,3 +1,7 @@
 name = "bot2"
 main = "src/index.ts"
-compatibility_date = "2026-08-26"
+compatibility_date = "2026-08-27" # מומלץ להשתמש בתאריך של היום
+
+# הגדרת החיבור לדפדפן המובנה של קלאודפלייר
+[browser]
+binding = "MYBROWSER" # משתנה זה ישמש אותך בקוד: env.MYBROWSER

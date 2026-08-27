@@ -5,3 +5,9 @@ compatibility_date = "2026-08-27" # מומלץ להשתמש בתאריך של ה
 # הגדרת החיבור לדפדפן המובנה של קלאודפלייר
 [browser]
 binding = "MYBROWSER" # משתנה זה ישמש אותך בקוד: env.MYBROWSER
+
+# 💾 הגדרת החיבור למאגר הזיכרון (KV)
+[[kv_namespaces]]
+binding = "STORE"  # משתנה זה ישמש אותך בקוד: env.FLICKR_STORE
+id = "c8b8d0c434da43ce8ea6546be0e3f2e5"
+
